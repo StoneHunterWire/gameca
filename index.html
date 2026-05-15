@@ -230,7 +230,11 @@
                 opponent.gear = 0;
                 opponent.rpm = 800;
                 opponent.shiftCooldown = 0;
-                opponent.reactionDelay = 10; // slight delay at start
+                // Randomize opponent each race
+                opponent.reactionDelay = 5 + Math.floor(Math.random() * 15); // 5-20 frames delay
+                opponent.optimalShiftRPM = 7200 + Math.floor(Math.random() * 1200); // 7200-8400 RPM
+                opponent.shiftDelay = 18 + Math.floor(Math.random() * 10); // 18-28 frames
+                opponent.throttle = 0.85 + Math.random() * 0.15; // 0.85-1.0 throttle efficiency
                 roadOffset = 0;
                 showMessage('GET READY!');
             }
@@ -298,9 +302,9 @@
             if (car.gear === 0) {
                 // Neutral - rev freely
                 if (car.throttle > 0) {
-                    car.rpm += 8000 * dt * car.throttle;
+                    car.rpm += 4500 * dt * car.throttle;
                 } else {
-                    car.rpm -= 5000 * dt;
+                    car.rpm -= 3000 * dt;
                 }
                 car.rpm = Math.max(car.idleRPM, Math.min(car.maxRPM, car.rpm));
             } else {
@@ -312,7 +316,7 @@
                     // Torque curve - peaks at mid RPM
                     const rpmNorm = car.rpm / car.maxRPM;
                     const torqueMultiplier = Math.sin(rpmNorm * Math.PI) * 1.2 + 0.3;
-                    const acceleration = torqueMultiplier * gearRatio * 8 * car.throttle;
+                    const acceleration = torqueMultiplier * gearRatio * 4.5 * car.throttle;
 
                     car.speed += acceleration * dt;
                     car.speed = Math.min(car.speed, maxSpeedMS);
@@ -391,7 +395,7 @@
                 // Torque curve
                 const rpmNorm = opponent.rpm / opponent.maxRPM;
                 const torqueMultiplier = Math.sin(rpmNorm * Math.PI) * 1.2 + 0.3;
-                const acceleration = torqueMultiplier * gearRatio * 8 * opponent.throttle;
+                const acceleration = torqueMultiplier * gearRatio * 4.5 * opponent.throttle;
 
                 opponent.speed += acceleration * dt;
                 opponent.speed = Math.min(opponent.speed, maxSpeedMS);
