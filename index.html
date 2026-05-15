@@ -157,17 +157,24 @@
             shiftCooldown: 0
         };
 
-        // Opponent car
+        // Opponent car - full gear simulation
         const opponent = {
             x: 100,
             y: 320,
             speed: 0,
             distance: 0,
-            targetGear: 1,
             gear: 0,
             rpm: 800,
-            shiftTime: 0,
-            difficulty: 0.92 // 0-1, affects performance
+            maxRPM: 8800,
+            idleRPM: 800,
+            redlineRPM: 8200,
+            gearRatios: [0, 3.4, 2.4, 1.75, 1.25, 0.95, 0.75],
+            gearMaxSpeed: [0, 38, 75, 125, 175, 225, 260], // slightly slower car
+            shiftCooldown: 0,
+            shiftDelay: 20, // frames cooldown (slightly slower shifts than player)
+            reactionDelay: 0, // delay before first shift
+            optimalShiftRPM: 7800, // AI shifts at this RPM (not perfectly optimal)
+            throttle: 1
         };
 
         // Visual elements
@@ -222,7 +229,8 @@
                 opponent.distance = 0;
                 opponent.gear = 0;
                 opponent.rpm = 800;
-                opponent.shiftTime = 0;
+                opponent.shiftCooldown = 0;
+                opponent.reactionDelay = 10; // slight delay at start
                 roadOffset = 0;
                 showMessage('GET READY!');
             }
@@ -274,7 +282,6 @@
                     } else {
                         showMessage('GO!');
                         game.state = 'racing';
-                        opponent.gear = 1;
                     }
                 }
                 return;
@@ -359,33 +366,54 @@
         function updateOpponent(dt) {
             if (game.state !== 'racing') return;
 
-            opponent.shiftTime -= dt;
-
-            // Simple AI: shift at optimal RPM
-            const maxSpeedMS = car.gearMaxSpeed[Math.min(opponent.gear, 6)] / 3.6;
-
-            if (opponent.gear === 0) {
-                opponent.gear = 1;
+            // Reaction delay at start
+            if (opponent.reactionDelay > 0) {
+                opponent.reactionDelay--;
+                return;
             }
 
-            const gearRatio = car.gearRatios[Math.min(opponent.gear, 6)];
-            const opMaxSpeed = car.gearMaxSpeed[Math.min(opponent.gear, 6)] / 3.6;
+            // Shift cooldown
+            if (opponent.shiftCooldown > 0) opponent.shiftCooldown--;
 
-            // Accelerate
-            const rpmNorm = opponent.rpm / car.maxRPM;
-            const torque = Math.sin(rpmNorm * Math.PI) * 1.2 + 0.3;
-            opponent.speed += torque * gearRatio * 8 * opponent.difficulty * dt;
-            opponent.speed = Math.min(opponent.speed, opMaxSpeed);
+            // AI puts it in first gear at start
+            if (opponent.gear === 0 && opponent.shiftCooldown <= 0) {
+                opponent.gear = 1;
+                opponent.shiftCooldown = opponent.shiftDelay;
+            }
 
-            // RPM
-            const speedRatio = opponent.speed / opMaxSpeed;
-            opponent.rpm = car.idleRPM + (car.maxRPM - car.idleRPM) * speedRatio;
+            // Engine simulation (same physics as player)
+            if (opponent.gear === 0) {
+                opponent.rpm = opponent.idleRPM;
+            } else {
+                const gearRatio = opponent.gearRatios[opponent.gear];
+                const maxSpeedMS = opponent.gearMaxSpeed[opponent.gear] / 3.6;
 
-            // Shift up
-            if (opponent.rpm > 7500 && opponent.gear < 6 && opponent.shiftTime <= 0) {
-                opponent.gear++;
-                opponent.rpm *= 0.6;
-                opponent.shiftTime = 0.3;
+                // Torque curve
+                const rpmNorm = opponent.rpm / opponent.maxRPM;
+                const torqueMultiplier = Math.sin(rpmNorm * Math.PI) * 1.2 + 0.3;
+                const acceleration = torqueMultiplier * gearRatio * 8 * opponent.throttle;
+
+                opponent.speed += acceleration * dt;
+                opponent.speed = Math.min(opponent.speed, maxSpeedMS);
+
+                // RPM based on speed
+                const speedRatio = opponent.speed / maxSpeedMS;
+                opponent.rpm = opponent.idleRPM + (opponent.maxRPM - opponent.idleRPM) * speedRatio;
+
+                // AI shift logic: shift up when RPM reaches target
+                if (opponent.rpm >= opponent.optimalShiftRPM && opponent.gear < 6 && opponent.shiftCooldown <= 0) {
+                    opponent.gear++;
+                    opponent.shiftCooldown = opponent.shiftDelay;
+                    // RPM drop on shift (same as player)
+                    const newMaxSpeedMS = opponent.gearMaxSpeed[opponent.gear] / 3.6;
+                    const newSpeedRatio = opponent.speed / newMaxSpeedMS;
+                    opponent.rpm = opponent.idleRPM + (opponent.maxRPM - opponent.idleRPM) * newSpeedRatio;
+                }
+
+                // Overrev - lose throttle briefly (AI mistake)
+                if (opponent.rpm >= opponent.maxRPM) {
+                    opponent.rpm = opponent.maxRPM;
+                }
             }
 
             opponent.distance += opponent.speed * dt;
