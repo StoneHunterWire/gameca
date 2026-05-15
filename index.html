@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drag Racing</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #1a1a2e;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+            color: #fff;
+            overflow: hidden;
+        }
+        #gameCanvas {
+            border: 2px solid #e94560;
+            border-radius: 8px;
+            box-shadow: 0 0 30px rgba(233, 69, 96, 0.3);
+        }
+        #ui {
+            display: flex;
+            gap: 40px;
+            margin-top: 20px;
+            align-items: center;
+        }
+        .gauge {
+            text-align: center;
+        }
+        .gauge-label {
+            font-size: 12px;
+            color: #aaa;
+            margin-bottom: 5px;
+        }
+        .gauge-value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #e94560;
+        }
+        .gear-display {
+            font-size: 48px;
+            font-weight: bold;
+            color: #0f3460;
+            background: #e94560;
+            width: 70px;
+            height: 70px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+        }
+        #controls {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #888;
+            text-align: center;
+        }
+        #message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 36px;
+            font-weight: bold;
+            color: #e94560;
+            text-shadow: 0 0 20px rgba(233, 69, 96, 0.8);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        #message.visible {
+            opacity: 1;
+        }
+        .rpm-bar {
+            width: 200px;
+            height: 20px;
+            background: #16213e;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 5px;
+            border: 1px solid #0f3460;
+        }
+        .rpm-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00b894, #fdcb6e, #e94560);
+            transition: width 0.05s;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="900" height="400"></canvas>
+    <div id="ui">
+        <div class="gauge">
+            <div class="gauge-label">RPM</div>
+            <div class="gauge-value" id="rpmValue">0</div>
+            <div class="rpm-bar">
+                <div class="rpm-fill" id="rpmFill"></div>
+            </div>
+        </div>
+        <div class="gauge">
+            <div class="gauge-label">GEAR</div>
+            <div class="gear-display" id="gearValue">N</div>
+        </div>
+        <div class="gauge">
+            <div class="gauge-label">SPEED (km/h)</div>
+            <div class="gauge-value" id="speedValue">0</div>
+        </div>
+        <div class="gauge">
+            <div class="gauge-label">TIME</div>
+            <div class="gauge-value" id="timeValue">0.00</div>
+        </div>
+    </div>
+    <div id="controls">
+        <p><b>SPACE</b> - газ | <b>SHIFT</b> - повысить передачу | <b>CTRL</b> - понизить передачу | <b>ENTER</b> - старт/рестарт</p>
+    </div>
+    <div id="message"></div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Game state
+        const game = {
+            state: 'waiting', // waiting, countdown, racing, finished
+            raceTime: 0,
+            raceDistance: 402, // meters (quarter mile)
+            distanceTraveled: 0,
+            countdownTimer: 0,
+            countdownStep: 3,
+            bestTime: null
+        };
+
+        // Car physics
+        const car = {
+            x: 100,
+            y: 260,
+            speed: 0, // m/s
+            rpm: 800,
+            gear: 0, // 0 = neutral
+            throttle: 0,
+            maxRPM: 9000,
+            idleRPM: 800,
+            redlineRPM: 8500,
+            wheelSpin: 0,
+            // Gear ratios (higher = more torque, less speed)
+            gearRatios: [0, 3.5, 2.5, 1.8, 1.3, 1.0, 0.8],
+            gearMaxSpeed: [0, 40, 80, 130, 180, 230, 270], // km/h per gear
+            shiftCooldown: 0
+        };
+
+        // Opponent car
+        const opponent = {
+            x: 100,
+            y: 320,
+            speed: 0,
+            distance: 0,
+            targetGear: 1,
+            gear: 0,
+            rpm: 800,
+            shiftTime: 0,
+            difficulty: 0.92 // 0-1, affects performance
+        };
+
+        // Visual elements
+        let roadOffset = 0;
+        let treeOffset = 0;
+        const trees = [];
+        const markers = [];
+
+        // Initialize trees
+        for (let i = 0; i < 10; i++) {
+            trees.push({ x: i * 120, type: Math.random() > 0.5 ? 'big' : 'small' });
+        }
+        // Distance markers
+        for (let i = 0; i <= 4; i++) {
+            markers.push({ distance: i * 100, passed: false });
+        }
+
+        // Input
+        const keys = {};
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Enter') {
+                startRace();
+                e.preventDefault();
+            }
+            if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+                shiftUp();
+                e.preventDefault();
+            }
+            if (e.code === 'ControlLeft' || e.code === 'ControlRight') {
+                shiftDown();
+                e.preventDefault();
+            }
+            keys[e.code] = true;
+            e.preventDefault();
+        });
+        document.addEventListener('keyup', (e) => {
+            keys[e.code] = false;
+        });
+
+        function startRace() {
+            if (game.state === 'waiting' || game.state === 'finished') {
+                game.state = 'countdown';
+                game.countdownStep = 3;
+                game.countdownTimer = 0;
+                game.distanceTraveled = 0;
+                game.raceTime = 0;
+                car.speed = 0;
+                car.rpm = 800;
+                car.gear = 0;
+                car.throttle = 0;
+                opponent.speed = 0;
+                opponent.distance = 0;
+                opponent.gear = 0;
+                opponent.rpm = 800;
+                opponent.shiftTime = 0;
+                roadOffset = 0;
+                showMessage('GET READY!');
+            }
+        }
+
+        function shiftUp() {
+            if (car.shiftCooldown > 0) return;
+            if (car.gear < 6) {
+                car.gear++;
+                car.shiftCooldown = 15;
+                // RPM drop on shift
+                if (car.gear > 1) {
+                    car.rpm = Math.max(car.idleRPM, car.rpm * 0.6);
+                }
+            }
+        }
+
+        function shiftDown() {
+            if (car.shiftCooldown > 0) return;
+            if (car.gear > 0) {
+                car.gear--;
+                car.shiftCooldown = 15;
+                if (car.gear > 0) {
+                    car.rpm = Math.min(car.maxRPM, car.rpm * 1.4);
+                }
+            }
+        }
+
+        function showMessage(text) {
+            const msg = document.getElementById('message');
+            msg.textContent = text;
+            msg.classList.add('visible');
+            setTimeout(() => msg.classList.remove('visible'), 1500);
+        }
+
+        // Update game logic
+        function update(dt) {
+            // Shift cooldown
+            if (car.shiftCooldown > 0) car.shiftCooldown--;
+
+            // Countdown
+            if (game.state === 'countdown') {
+                game.countdownTimer += dt;
+                if (game.countdownTimer >= 1) {
+                    game.countdownTimer = 0;
+                    game.countdownStep--;
+                    if (game.countdownStep > 0) {
+                        showMessage(game.countdownStep.toString());
+                    } else {
+                        showMessage('GO!');
+                        game.state = 'racing';
+                        opponent.gear = 1;
+                    }
+                }
+                return;
+            }
+
+            if (game.state !== 'racing') return;
+
+            game.raceTime += dt;
+
+            // Throttle
+            car.throttle = keys['Space'] ? 1 : 0;
+
+            // Engine simulation
+            if (car.gear === 0) {
+                // Neutral - rev freely
+                if (car.throttle > 0) {
+                    car.rpm += 8000 * dt * car.throttle;
+                } else {
+                    car.rpm -= 5000 * dt;
+                }
+                car.rpm = Math.max(car.idleRPM, Math.min(car.maxRPM, car.rpm));
+            } else {
+                // In gear - RPM affects speed
+                const gearRatio = car.gearRatios[car.gear];
+                const maxSpeedMS = car.gearMaxSpeed[car.gear] / 3.6;
+
+                if (car.throttle > 0) {
+                    // Torque curve - peaks at mid RPM
+                    const rpmNorm = car.rpm / car.maxRPM;
+                    const torqueMultiplier = Math.sin(rpmNorm * Math.PI) * 1.2 + 0.3;
+                    const acceleration = torqueMultiplier * gearRatio * 8 * car.throttle;
+
+                    car.speed += acceleration * dt;
+                    car.speed = Math.min(car.speed, maxSpeedMS);
+
+                    // RPM based on speed in current gear
+                    const speedRatio = car.speed / maxSpeedMS;
+                    car.rpm = car.idleRPM + (car.maxRPM - car.idleRPM) * speedRatio;
+                } else {
+                    // Engine braking
+                    car.speed -= 3 * dt;
+                    car.speed = Math.max(0, car.speed);
+                    const speedRatio = car.speed / maxSpeedMS;
+                    car.rpm = car.idleRPM + (car.maxRPM - car.idleRPM) * speedRatio;
+                }
+
+                // Overrev protection
+                if (car.rpm >= car.maxRPM) {
+                    car.rpm = car.maxRPM;
+                    car.throttle = 0;
+                }
+            }
+
+            // Distance
+            game.distanceTraveled += car.speed * dt;
+
+            // --- Opponent AI ---
+            updateOpponent(dt);
+
+            // Road offset for visual scroll
+            roadOffset += car.speed * dt * 5; // pixels per meter scaled
+
+            // Check finish
+            if (game.distanceTraveled >= game.raceDistance) {
+                game.state = 'finished';
+                const playerWon = game.distanceTraveled >= game.raceDistance && opponent.distance < game.raceDistance;
+                if (playerWon) {
+                    showMessage('WIN! ' + game.raceTime.toFixed(2) + 's');
+                } else {
+                    showMessage('LOSE!');
+                }
+                if (!game.bestTime || game.raceTime < game.bestTime) {
+                    game.bestTime = game.raceTime;
+                }
+            }
+            if (opponent.distance >= game.raceDistance && game.state === 'racing') {
+                game.state = 'finished';
+                showMessage('LOSE! Opponent: ' + game.raceTime.toFixed(2) + 's');
+            }
+        }
+
+        function updateOpponent(dt) {
+            if (game.state !== 'racing') return;
+
+            opponent.shiftTime -= dt;
+
+            // Simple AI: shift at optimal RPM
+            const maxSpeedMS = car.gearMaxSpeed[Math.min(opponent.gear, 6)] / 3.6;
+
+            if (opponent.gear === 0) {
+                opponent.gear = 1;
+            }
+
+            const gearRatio = car.gearRatios[Math.min(opponent.gear, 6)];
+            const opMaxSpeed = car.gearMaxSpeed[Math.min(opponent.gear, 6)] / 3.6;
+
+            // Accelerate
+            const rpmNorm = opponent.rpm / car.maxRPM;
+            const torque = Math.sin(rpmNorm * Math.PI) * 1.2 + 0.3;
+            opponent.speed += torque * gearRatio * 8 * opponent.difficulty * dt;
+            opponent.speed = Math.min(opponent.speed, opMaxSpeed);
+
+            // RPM
+            const speedRatio = opponent.speed / opMaxSpeed;
+            opponent.rpm = car.idleRPM + (car.maxRPM - car.idleRPM) * speedRatio;
+
+            // Shift up
+            if (opponent.rpm > 7500 && opponent.gear < 6 && opponent.shiftTime <= 0) {
+                opponent.gear++;
+                opponent.rpm *= 0.6;
+                opponent.shiftTime = 0.3;
+            }
+
+            opponent.distance += opponent.speed * dt;
+        }
+
+        // Drawing functions
+        function drawSky() {
+            const gradient = ctx.createLinearGradient(0, 0, 0, 180);
+            gradient.addColorStop(0, '#0f3460');
+            gradient.addColorStop(1, '#16213e');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, 180);
+        }
+
+        function drawMountains() {
+            ctx.fillStyle = '#1a1a3e';
+            ctx.beginPath();
+            ctx.moveTo(0, 180);
+            for (let i = 0; i < canvas.width; i += 60) {
+                const h = 30 + Math.sin((i + roadOffset * 0.1) * 0.01) * 25;
+                ctx.lineTo(i, 180 - h);
+            }
+            ctx.lineTo(canvas.width, 180);
+            ctx.fill();
+        }
+
+        function drawBackground() {
+            // Trees
+            ctx.fillStyle = '#2d5a27';
+            const treePos = roadOffset * 0.3;
+            for (const tree of trees) {
+                const x = ((tree.x - treePos) % 1200 + 1200) % 1200 - 100;
+                const size = tree.type === 'big' ? 40 : 25;
+                ctx.beginPath();
+                ctx.moveTo(x, 185);
+                ctx.lineTo(x - size/2, 185);
+                ctx.lineTo(x, 185 - size);
+                ctx.lineTo(x + size/2, 185);
+                ctx.fill();
+                // Trunk
+                ctx.fillStyle = '#5a3e1b';
+                ctx.fillRect(x - 3, 185, 6, 15);
+                ctx.fillStyle = '#2d5a27';
+            }
+        }
+
+        function drawRoad() {
+            // Road surface
+            ctx.fillStyle = '#333';
+            ctx.fillRect(0, 200, canvas.width, 180);
+
+            // Lane divider
+            ctx.strokeStyle = '#fff';
+            ctx.setLineDash([40, 30]);
+            ctx.lineDashOffset = -roadOffset;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, 295);
+            ctx.lineTo(canvas.width, 295);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Road edges
+            ctx.fillStyle = '#e94560';
+            ctx.fillRect(0, 198, canvas.width, 3);
+            ctx.fillRect(0, 379, canvas.width, 3);
+
+            // Distance markers
+            for (const marker of markers) {
+                const relDist = marker.distance - game.distanceTraveled;
+                const screenX = 100 + relDist * 2;
+                if (screenX > 0 && screenX < canvas.width) {
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '12px Courier New';
+                    ctx.fillText(marker.distance + 'm', screenX, 195);
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(screenX, 200);
+                    ctx.lineTo(screenX, 380);
+                    ctx.stroke();
+                }
+            }
+
+            // Finish line
+            const finishRelDist = game.raceDistance - game.distanceTraveled;
+            const finishX = 100 + finishRelDist * 2;
+            if (finishX > 0 && finishX < canvas.width + 50) {
+                // Checkerboard pattern
+                const squareSize = 10;
+                for (let row = 0; row < 18; row++) {
+                    for (let col = 0; col < 3; col++) {
+                        ctx.fillStyle = (row + col) % 2 === 0 ? '#fff' : '#000';
+                        ctx.fillRect(finishX + col * squareSize, 200 + row * squareSize, squareSize, squareSize);
+                    }
+                }
+            }
+        }
+
+        function drawCar(x, y, color, isPlayer) {
+            // Car body
+            ctx.fillStyle = color;
+            // Main body
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + 80, y);
+            ctx.lineTo(x + 85, y + 5);
+            ctx.lineTo(x + 90, y + 15);
+            ctx.lineTo(x + 85, y + 25);
+            ctx.lineTo(x - 10, y + 25);
+            ctx.lineTo(x - 15, y + 20);
+            ctx.lineTo(x - 10, y);
+            ctx.fill();
+
+            // Roof/cabin
+            ctx.fillStyle = shadeColor(color, -30);
+            ctx.beginPath();
+            ctx.moveTo(x + 15, y);
+            ctx.lineTo(x + 55, y);
+            ctx.lineTo(x + 50, y - 15);
+            ctx.lineTo(x + 20, y - 15);
+            ctx.fill();
+
+            // Windows
+            ctx.fillStyle = '#87ceeb';
+            ctx.globalAlpha = 0.7;
+            ctx.beginPath();
+            ctx.moveTo(x + 22, y - 2);
+            ctx.lineTo(x + 48, y - 2);
+            ctx.lineTo(x + 45, y - 13);
+            ctx.lineTo(x + 24, y - 13);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+
+            // Wheels
+            const wheelBounce = isPlayer ? Math.sin(roadOffset * 0.3) * 1 : Math.sin(roadOffset * 0.3 + 1) * 1;
+            ctx.fillStyle = '#111';
+            ctx.beginPath();
+            ctx.arc(x + 10, y + 27 + wheelBounce, 10, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(x + 65, y + 27 + wheelBounce, 10, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Wheel rims
+            ctx.fillStyle = '#ccc';
+            ctx.beginPath();
+            ctx.arc(x + 10, y + 27 + wheelBounce, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(x + 65, y + 27 + wheelBounce, 5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Exhaust flames when throttle
+            if (isPlayer && car.throttle > 0 && car.gear > 0) {
+                ctx.fillStyle = `rgba(255, ${100 + Math.random() * 100}, 0, ${0.5 + Math.random() * 0.5})`;
+                const flameLen = 10 + Math.random() * 15 + (car.rpm / car.maxRPM) * 20;
+                ctx.beginPath();
+                ctx.moveTo(x - 15, y + 18);
+                ctx.lineTo(x - 15 - flameLen, y + 15 + Math.random() * 6);
+                ctx.lineTo(x - 15, y + 22);
+                ctx.fill();
+            }
+
+            // Headlight glow
+            ctx.fillStyle = 'rgba(255, 255, 200, 0.8)';
+            ctx.beginPath();
+            ctx.arc(x + 88, y + 10, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        function shadeColor(color, percent) {
+            const num = parseInt(color.replace('#', ''), 16);
+            const amt = Math.round(2.55 * percent);
+            const R = Math.max(0, Math.min(255, (num >> 16) + amt));
+            const G = Math.max(0, Math.min(255, ((num >> 8) & 0x00FF) + amt));
+            const B = Math.max(0, Math.min(255, (num & 0x0000FF) + amt));
+            return `rgb(${R},${G},${B})`;
+        }
+
+        function drawHUD() {
+            // Speed on canvas
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 16px Courier New';
+            ctx.fillText(`${Math.round(car.speed * 3.6)} km/h`, 20, 30);
+            ctx.fillText(`Dist: ${Math.round(game.distanceTraveled)}m / ${game.raceDistance}m`, 20, 50);
+
+            if (game.bestTime) {
+                ctx.fillStyle = '#fdcb6e';
+                ctx.fillText(`Best: ${game.bestTime.toFixed(2)}s`, 750, 30);
+            }
+
+            // Gear indicator on canvas
+            ctx.fillStyle = car.rpm > car.redlineRPM ? '#e94560' : '#0f0';
+            ctx.font = 'bold 20px Courier New';
+            const gearText = car.gear === 0 ? 'N' : car.gear.toString();
+            ctx.fillText(`Gear: ${gearText}`, 750, 55);
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            drawSky();
+            drawMountains();
+            drawBackground();
+            drawRoad();
+
+            // Draw opponent car
+            const opponentScreenX = 100 + (opponent.distance - game.distanceTraveled) * 2;
+            drawCar(opponentScreenX, opponent.y, '#3498db', false);
+
+            // Draw player car (fixed position)
+            drawCar(car.x, car.y, '#e94560', true);
+
+            drawHUD();
+
+            // Countdown display
+            if (game.state === 'countdown' && game.countdownStep > 0) {
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 80px Courier New';
+                ctx.textAlign = 'center';
+                ctx.fillText(game.countdownStep.toString(), canvas.width / 2, canvas.height / 2);
+                ctx.textAlign = 'left';
+            }
+
+            // Waiting state
+            if (game.state === 'waiting') {
+                ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = '#e94560';
+                ctx.font = 'bold 36px Courier New';
+                ctx.textAlign = 'center';
+                ctx.fillText('DRAG RACING', canvas.width / 2, canvas.height / 2 - 30);
+                ctx.fillStyle = '#fff';
+                ctx.font = '18px Courier New';
+                ctx.fillText('Press ENTER to start', canvas.width / 2, canvas.height / 2 + 20);
+                ctx.fillText('SPACE = gas | SHIFT = gear up | CTRL = gear down', canvas.width / 2, canvas.height / 2 + 50);
+                ctx.textAlign = 'left';
+            }
+        }
+
+        // Update UI elements
+        function updateUI() {
+            document.getElementById('rpmValue').textContent = Math.round(car.rpm);
+            document.getElementById('rpmFill').style.width = ((car.rpm / car.maxRPM) * 100) + '%';
+            document.getElementById('gearValue').textContent = car.gear === 0 ? 'N' : car.gear;
+            document.getElementById('speedValue').textContent = Math.round(car.speed * 3.6);
+            document.getElementById('timeValue').textContent = game.raceTime.toFixed(2);
+
+            // RPM bar color
+            const rpmPercent = car.rpm / car.maxRPM;
+            const fill = document.getElementById('rpmFill');
+            if (rpmPercent > 0.9) {
+                fill.style.background = '#e94560';
+            } else if (rpmPercent > 0.7) {
+                fill.style.background = 'linear-gradient(90deg, #00b894, #fdcb6e, #e94560)';
+            } else {
+                fill.style.background = 'linear-gradient(90deg, #00b894, #fdcb6e)';
+            }
+        }
+
+        // Game loop
+        let lastTime = 0;
+        function gameLoop(timestamp) {
+            const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+            lastTime = timestamp;
+
+            update(dt);
+            draw();
+            updateUI();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
